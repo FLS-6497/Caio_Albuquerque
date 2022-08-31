@@ -1,0 +1,150 @@
+---
+title: "First Exercises"
+author: "Caio César Albuquerque"
+date: '2022-08-31'
+output:
+  html_document:
+    df_print: paged
+  
+---
+
+```{r}
+library(mlr3)
+library(tidyverse)
+library(ggplot2)
+```
+
+
+### Exercicios
+```{r}
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+
+dados <- readr::read_csv(link)
+```
+
+### Relação entre cobertura de nuvens e temperatura máxima
+```{r}
+dados %>% 
+  ggplot() +
+  geom_smooth(aes(maximum_temprature, cloud_coverage), se = TRUE, method = lm) +
+  geom_point(aes(maximum_temprature, cloud_coverage))
+```
+
+
+```{r}
+modelo <- dados %>% lm(maximum_temprature ~ wind_speed + humidity + cloud_coverage + pressure, data = .)
+
+# Salvar predição como variável (vetor no banco de dados chamado "dados")
+dados$predicao <- predict(modelo)
+```
+
+
+### Comparar maximum_temperature e a predição gerada anteriormente
+```{r}
+dados %>% 
+  arrange(maximum_temprature) %>% 
+  mutate(id = row_number()) %>% 
+  select(id, maximum_temprature, predicao) %>% 
+  pivot_longer(-id) %>% 
+  mutate(name = fct_relevel(name, "predicao")) %>% 
+  ggplot(aes(id, value, color = name)) + geom_line()
+
+# Função mutate(name = fct_relevel(name, "nome da variável que queremos que apareça na frente"))
+```
+
+### Comparar a relação da temperatura máxima com outras variáveis
+```{r}
+# Primeiro, selecionar somente as variaveis numericas.
+# Manter a variável "maximum_temperature" e empilhar as outras.
+# Criamos várias observações para a primeira observação da variável "maximum_temperature"
+dados %>% select_if(is.numeric) %>% 
+  pivot_longer(-maximum_temprature) %>% 
+  ggplot(aes(maximum_temprature, value)) + geom_point() + geom_smooth(method = "lm", se = TRUE) + facet_wrap(~ name, scale = "free")
+
+# Primeiro, é necessário atribuir o gráfico criado a um objeto (por exemplo: "grafico_1")
+# Para salvar o grafico_1: ggsave(plot = grafico_1, file = paste0("grafico.png"))
+```
+
+
+### Criando função para coletar 1000 amostras e calcular a média de humidity
+```{r}
+nova_funcao <- function(){
+  
+  dados %>% 
+    sample_n(1000) %>% 
+    summarise(humidity = mean(humidity)) %>% 
+    pluck("humidity")
+  
+}
+
+# Usar a função
+nova_funcao()
+
+
+# A função "pluck()" extrai o(s) valor(es) de um determinado vetor 
+```
+
+
+### Repetir a função anterior 1000 vezes
+```{r}
+for (i in 1:1000) {
+  print(nova_funcao())
+}
+```
+
+
+### Tidyverse manner para repetir a função 1000 vezes
+```{r}
+experimento <- 1:1000 %>% 
+  map_dbl(~ nova_funcao())
+
+# Plotando o histograma das médias
+as.data.frame(experimento) %>%
+  ggplot() + geom_histogram(aes(experimento), colour = "black", fill = "orange")
+
+
+# A função "map_dbl()" é utilizada para dados numéricos
+```
+
+
+### Regressão
+```{r}
+modelo_2 <- dados %>% lm(humidity ~ wind_speed + cloud_coverage + pressure, data = .)
+
+# Salvar predição como variável (vetor no banco de dados chamado "dados")
+dados$predicao_2 <- predict(modelo_2)
+```
+
+### Retirar o R2 da regressão anterior
+```{r}
+funcao <- function() {
+  dados %>% 
+    sample_n(1000) %>% 
+    lm(humidity ~ wind_speed + cloud_coverage +pressure, data = .) %>% 
+    summary() %>% 
+    pluck("r.squared")
+  
+}
+
+funcao()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
