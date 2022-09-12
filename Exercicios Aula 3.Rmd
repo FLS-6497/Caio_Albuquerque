@@ -1,0 +1,123 @@
+---
+title: "Aula 3"
+author: "Caio César Albuquerque"
+date: '2022-09-07'
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(tidyverse)
+library(mlr3)
+library(mlr3learners)
+library(mlr3verse)
+```
+
+
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula3/PKAP_raw_data.csv"
+dados <- readr::read_csv(link)
+```
+
+
+
+```{r}
+dados_2 <- dados %>% 
+  select(race, contains("officer_")) %>% 
+  mutate(race = ifelse(race == "Black", 1, 0)) %>% 
+  mutate(officer_present = ifelse(officer_present == "Unknown", 1, 0)) %>% 
+  mutate(officer_race = case_when(officer_race == "White" ~ 1,
+                                  officer_race == "White,Unknown" ~ 1,
+                                  officer_race == "White, Unknown" ~ 1,
+                                  TRUE ~ 0)) %>% 
+  mutate(across(c(officer_name, officer_years, officer_undercover, officer_offduty, officer_personal), ~ ifelse(.x == "Yes", 1, 0))) %>%
+  mutate(officer_gender = ifelse(str_detect(officer_gender, "Female"), 1, 0)) %>% 
+  select(-officer_fire) %>% 
+  na.omit()
+```
+
+
+### Graphic
+```{r}
+dados_2 %>%
+  pivot_longer(-race) %>% 
+  mutate(race = ifelse(race == 1, "Black", "White")) %>% 
+  group_by(name, race) %>% 
+  summarise(n = sum(value, na.rm = TRUE)) %>% 
+  ggplot(aes(x = race, y = n)) +
+  geom_col() +
+  facet_wrap(~ name, scale = "free")
+```
+
+
+### Function to train the model
+```{r}
+treino_modelo <- function(treino = 0.7){
+  # Model
+  task <- as_task_classif(race ~ ., data = dados_2)
+  # Split the sample into train and test
+  split <-  partition(task, ratio = treino)
+  # Learning Algorithm
+  learner <- lrn("classif.log_reg")
+  learner$train(task, split$train)
+  # Assessing the prediction
+  pred <- learner$predict(task)
+  pred$confusion
+  measure <- msr("classif.acc")
+  pred$score(measure)
+  
+}
+```
+
+### Execute the function
+```{r}
+treino_modelo()
+```
+
+### Repeat the function 500 times
+```{r}
+experiment <- 1:500 %>% 
+  map_dbl(~ treino_modelo())
+
+# Graph
+as.data.frame(experiment) %>%
+  ggplot() + geom_histogram(aes(experiment), colour = "black", fill = "orange")
+```
+
+
+
+### Second model
+```{r}
+treino_modelo2 <- function(train = 0.7){
+  # Model
+  task <- as_task_classif(race ~ ., data = dados_2)
+  # Split the sample into train and test
+  split <-  partition(task, ratio = train)
+  # Learning Algorithm
+  learner <- lrn("classif.rpart", predict_type = "prob")
+  # Assessing the prediction
+  pred <- learner$train(task, split$train)$predict(task, split$test)
+  pred$confusion
+  measure <- msr("classif.acc")
+  pred$score(measure)
+  
+}
+```
+
+### Executing the function
+```{r}
+treino_modelo2()
+```
+
+### Repeat the function 500 times
+```{r}
+experiment2 <- 1:500 %>% 
+  map_dbl(~ treino_modelo2())
+
+# Graph
+as.data.frame(experiment2) %>%
+  ggplot() + geom_histogram(aes(experiment2), colour = "black", fill = "orange")
+```
+
+
