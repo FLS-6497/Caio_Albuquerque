@@ -1,0 +1,198 @@
+---
+title: "Aula 4"
+author: "Caio César Albuquerque"
+date: "2022-09-14"
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+library(mlr3)
+library(mlr3learners)
+library(tidyverse)
+library(glmnet)
+```
+
+
+
+```{r}
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+
+dados <- readr::read_csv(link)
+```
+
+Limpeza dos dados
+```{r}
+dados <- dados %>% 
+  select_if(is.numeric)
+```
+
+
+```{r}
+modelo1 <- function(algorithm, alpha) {
+# Seleciona a tarefa e o modelo
+tsk <- as_task_regr(amount_of_rain ~ ., data = dados)
+learner <- lrn(algorithm, alpha = alpha) 
+
+# Define estrategia de separacao da amostra
+resampling <- rsmp("holdout", ratio = 0.7)
+
+# Treina o modelo
+resultados <- resample(tsk, learner, resampling) # a funcao resample roda o modelo
+
+# Avalia predicoes
+measure <- msr(c("regr.mse")) # MSE, RMSE, ou MAE -> metrica de erros
+res <- resultados$score(measure, ids = FALSE, predict_sets = "test") # o metodo score calcula metrica de validacao
+# predict_sets deixa explicito qual serao os dados utilizados na predicao podem ser nos dados de teste ou de treino.
+
+as.numeric(res[1, 6]) # pegar somente o resultado da ultima coluna
+
+}
+
+modelo1(algorithm = "regr.glmnet", alpha = 1)
+# escolher entre alpha = 1 (LASSO) e alpha = 0 (RIDGE)
+```
+
+### Repeat the function 100x
+```{r}
+# LASSO
+experiment_lasso <- 1:100 %>% 
+  map_dbl(~ modelo1(algorithm = "regr.glmnet", alpha = 1))
+```
+
+### Graph LASSO
+```{r}
+as.data.frame(experiment_lasso) %>% 
+  ggplot() + geom_histogram(aes(experiment_lasso), colour = "black", fill = "orange")
+```
+
+
+### Repeat with a loop (RIDGE)
+```{r}
+# RIDGE
+experiment_ridge <- numeric(100)
+for (i in 1:length(experiment_ridge)){
+  experiment_ridge[i] <- modelo1(algorithm = "regr.glmnet", alpha = 0)
+} 
+```
+
+### Graph RIDGE
+```{r}
+as.data.frame(experiment_ridge) %>% 
+  ggplot() + geom_histogram(aes(experiment_ridge), colour = "black", fill = "orange")
+```
+
+
+
+# Second Example
+```{r}
+modelo2 <- function(algorithm = "regr.glmnet") {
+# Seleciona a tarefa e o modelo
+tsk <- as_task_regr(amount_of_rain ~ ., data = dados)
+learner <- lrn(algorithm) 
+
+# Define estrategia de separacao da amostra
+resampling <- rsmp("holdout", ratio = 0.7)
+
+# Treina o modelo
+resultados <- resample(tsk, learner, resampling) # a funcao resample roda o modelo
+
+# Avalia predicoes
+measure <- msr(c("regr.mse")) # MSE, RMSE, ou MAE -> metrica de erros
+
+res <- resultados$score(measure, ids = FALSE, predict_sets = "test") 
+# o metodo score calcula metrica de validacao
+# predict_sets deixa explicito qual serao os dados utilizados na predicao podem ser nos dados de teste ou de treino.
+
+as.numeric(res[1, 6]) # pegar somente o resultado da ultima coluna e assegurar que os objetos sao numericos
+
+}
+
+modelo2()
+
+```
+
+### Executar dois metodos ao mesmo tempo
+```{r}
+c("regr.lm", "regr.glmnet") %>% 
+  map_dbl(~ modelo2(.x))
+```
+
+
+
+# Exercise 3
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula4/eleicoes_mun_2018.csv"
+elei18 <- readr::read_csv2(link)
+```
+### Percentage of votes for Bolsonaro
+```{r}
+elei18 <- elei18 %>% 
+  mutate(pct_bolsonaro = 100*(votos_bolsonaro_2t_2018/votos_validos_2t_2018)) 
+```
+
+### Percentage of votes by state
+```{r}
+elei18 %>% group_by(sigla_uf) %>% 
+  ggplot() + geom_col(aes(sigla_uf, pct_bolsonaro), fill = "orange") + 
+  ggtitle("Percentual de votos de Bolsonaro por estado") + xlab("UF") + ylab("Percentual de votos") 
+```
+### Relation between GDP and the percentage of votes
+```{r}
+elei18_2 <- elei18 %>% 
+  mutate(pib_capita = pib_total / aptos_2018) %>% 
+  mutate(pib_capita = scale(pib_capita)) 
+
+elei18_2 %>% 
+  ggplot(aes(x = pib_capita, y = pct_bolsonaro)) + geom_point(alpha = 0.3) + geom_smooth(se = FALSE)
+
+# The function "scale()" turns each observation into a z-score standardized value. Deviation by mean divided by the standard error.
+```
+
+
+```{r}
+elei18_3 <- elei18_2 %>% 
+  select_if(is.numeric)
+```
+
+
+```{r}
+modelo3 <- function(algorithm = "regr.lm"){
+  
+tks <- as_task_regr(pct_bolsonaro ~ pib_total + capital + amazonia_legal, data = elei18_3)
+learner <-  lrn(algorithm)
+resampling <- rsmp("holdout", ratio = 0.7)
+resultados <- resample(tks, learner, resampling)
+measure <- msr(c("regr.mae"))
+res <- resultados$score(measure, ids = FALSE, predict_sets = "test")
+res$regr.mae 
+}
+
+modelo3()
+```
+
+
+```{r}
+modelo4 <- function(algorithm = "regr.glmnet"){
+  
+tks <- as_task_regr(pct_bolsonaro ~ pib_total + capital + amazonia_legal, data = elei18_3)
+learner <-  lrn(algorithm)
+resampling <- rsmp("holdout", ratio = 0.7)
+resultados <- resample(tks, learner, resampling)
+measure <- msr(c("regr.rmse"))
+res <- resultados$score(measure, ids = FALSE, predict_sets = "test")
+res$regr.rmse 
+}
+
+modelo4()
+```
+
+
+
+
+
+
+
