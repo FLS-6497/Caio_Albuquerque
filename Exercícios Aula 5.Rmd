@@ -1,0 +1,212 @@
+---
+title: "Aula 5"
+author: "Caio César Albuquerque"
+date: "2022-09-28"
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+```{r}
+library(quanteda)
+library(tidyverse)
+library(mlr3)
+library(wordcloud)
+library(mlr3learners)
+library(tidytext)
+library(stopwords)
+library(tokenizers)
+```
+### Function "bind_rows" to join database in a framework
+### Regularisation must be done for training and test samples
+
+
+### Data
+```{r}
+link <- "https://github.com/FLS-6497/datasets/raw/main/aula5/discursos_presidenciais.csv"
+discursos <- readr::read_csv2(link)
+```
+
+### Function 1
+```{r}
+function_1 <- function(){
+  
+# 1) Create a corpus --> set of documents
+cp <- corpus(discursos, text_field = "discurso")
+# text_field the name of the variable that contains the main data ("discurso")
+
+    
+# 2) Tokenization
+tks <- tokens(cp, remove_punct = TRUE, remove_numbers = TRUE) %>%
+  tokens_tolower() %>% # put all letters in lowcase
+  tokens_remove(pattern =  stopwords("pt"), min_nchar = 5)
+# tokens_remove(pattern = c("aquele", "aquela", "isto"...)) --> sets a word list to remove 
+
+
+# 3) Bag-of-words matrix
+bow <- dfm(tks) %>%
+  dfm_trim(min_docfreq = 0.05, docfreq_type = "prop") 
+# "min_docfreq" --> only keep in the sample words that appear in n different documents or the n proportion of documents from where the words are found.
+# "docfreq_type" --> "prop" = proportion, "count" = counting
+
+
+# 4) Transform into a tibble and include a target
+bow <- bow %>% 
+  as.matrix() %>% 
+  as_tibble() %>% 
+  janitor::clean_names() %>% # organises the variables' names, graphic signs...
+  mutate_all(as.numeric)
+
+bow$y <- discursos$presidente
+
+
+# MLR3
+tsk <- as_task_classif(y ~ ., data = bow)
+learner <- lrn("classif.naive_bayes")
+resampling <- rsmp("holdout", ratio = 0.7)
+resultados <- resample(tsk, learner, resampling)
+
+
+resultados$prediction()
+resultados$score(msr("classif.fbeta"))
+}
+
+function_1()
+```
+
+
+### Function 2
+```{r}
+function_2 <- function(df, var){
+cp <- corpus(df, text_field = var)  
+tks <- tokens(cp, remove_punct = TRUE, remove_numbers = TRUE) %>%
+  tokens_tolower() %>% # put all letters in lowcase
+  tokens_remove(pattern =  stopwords("pt"), min_nchar = 5)
+
+bow_2 <- dfm(tks) %>%
+  dfm_trim(min_docfreq = 0.05, docfreq_type = "prop")
+
+dados_2 <- as.matrix(bow_2) %>% 
+  as_tibble() %>% 
+  janitor::clean_names() %>% 
+  mutate_all(as.numeric)
+  
+  
+dados_2$y <- df$presidente
+return(list(df = dados_2, bow_2 = bow_2))
+}
+
+function_2(df = discursos, var = "discurso")
+```
+
+
+### 
+```{r}
+# Criar ID para identificar as linhas
+discursos <- discursos %>% 
+  mutate(id = row_number())
+
+# Sorteio Split Sample para a amostra de treino
+treino <- discursos %>% 
+  sample_frac(0.7)
+
+# Criando base de teste
+teste <- discursos %>% 
+  filter(!id %in% treino$id)
+
+# Criar BOW usando apenas a base de treino
+treino_bow <- function_2(df = treino, var = "discurso")
+
+# Adequar a base de teste
+teste_bow <- teste %>% 
+  corpus(text_field = "discurso") %>% 
+  tokens() %>% 
+  dfm() %>% 
+  dfm_match(featnames(treino_bow$bow_2)) %>% # deixar a BOW de teste com as mesmas caracteristicas da BOW de treino
+  as.matrix() %>% 
+  as_tibble() %>% 
+  janitor::clean_names() 
+  
+teste_bow$y <- as.factor(teste$presidente)
+
+# Treinar um modelo Naive Bayes
+tsk <- as_task_classif(y ~ ., data = treino_bow$df)
+learner <- lrn("classif.naive_bayes")
+learner$train(tsk)
+
+# Fazer predicoes
+pred <- learner$predict_newdata(teste_bow)
+pred
+
+# Adicionar predicoes na base de teste para vizualizacao
+teste$predicao <- pred$response
+view(teste)
+```
+
+
+```{r}
+# Conferir predicoes com metricas de validacao
+pred$confusion
+pred$score(msrs(c("classif.precision", "classif.recall", "classif.fbeta")))
+```
+
+### Palavras dos discursos
+```{r}
+nuvem <- discursos %>%
+  group_by(presidente) %>% 
+  select(id, discurso, presidente) %>% 
+  unnest_tokens(palavras, discurso, strip_punct = TRUE, to_lower = TRUE, strip_numeric = TRUE) 
+ 
+
+
+stopwords <- get_stopwords(language = "pt") %>% 
+  rename(palavras = word)
+
+nuvem <- nuvem %>% 
+  anti_join(stopwords, by = "palavras") 
+```
+
+
+### Nuvem - Dilma
+```{r}
+nuvem_dilma <- nuvem %>% 
+  filter(presidente == "Dilma") %>% 
+  sample_n(1500) %>% 
+  pull(palavras) %>% 
+  wordcloud()
+```
+
+### Nuvem - Temer
+```{r}
+nuvem_temer <- nuvem %>% 
+  filter(presidente == "Temer") %>% 
+  sample_n(1500) %>% 
+  pull(palavras) %>% 
+  wordcloud()
+```
+
+### Palavras mais frequentes - Dilma
+```{r}
+nuvem %>% 
+  filter(presidente == "Dilma") %>% 
+  group_by(palavras) %>% 
+  tally() %>% 
+  top_n(15) %>% 
+  mutate(palavras = fct_reorder(palavras, n)) %>% 
+  ggplot() + geom_col(aes(n, palavras)) + theme_minimal()
+```
+
+### Palavras mais frequentes - Temer
+```{r}
+nuvem %>% 
+  filter(presidente == "Temer") %>% 
+  group_by(palavras) %>% 
+  tally() %>% 
+  top_n(15) %>% 
+  mutate(palavras = fct_reorder(palavras, n)) %>% 
+  ggplot() + geom_col(aes(n, palavras)) + theme_minimal()
+```
+
