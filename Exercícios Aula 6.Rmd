@@ -1,0 +1,228 @@
+---
+title: "Exercícios Aula 6"
+author: "Caio César Albuquerque"
+date: "2022-10-05"
+output:
+  html_document:
+    df_print: paged
+---
+###Function "po()" -> pipe operator, makes it possible to try several different pre-processing methods, assessment parameters and algorithms at the same time. Pipeline operators are building blocks to compose linear machine learning pipelines.
+
+
+```{r}
+library(earth)
+library(tidyverse)
+library(mlr3verse)
+library(igraph)
+library(mlr3extralearners)
+library(rpart) # para arvore de decisao
+```
+
+
+```{r}
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+dados <- readr::read_csv(link)
+```
+
+### Crie três diferentes pré-processamentos para as features numéricas da base. As pipelines devem usar regressão linear simples como modelo para predizer a variável "maximum_temprature".
+```{r}
+dados <- dados %>% 
+  select_if(is.numeric)
+
+# Creating the pipelines (gr) without transforming the data, just including a linear model.
+gr <- po("learner", learner = lrn("regr.lm")) %>% 
+  as_learner() # turns the pipeline into a learner
+# gr (graphos) is a common name for pipelines
+
+# Pipeline that standardizes the variables
+gr2 <- po("scale") %>>% 
+  po("learner", learner = lrn("regr.lm")) %>% 
+  as_learner()
+
+gr2$graph$plot() # view the grapho
+
+
+# Pipeline including some polynomials
+gr3 <- po("scale") %>>% 
+  po("mutate") %>>% 
+  po("learner", learner = lrn("regr.lm")) %>% 
+  as_learner()
+ 
+gr3$param_set$values$mutate.mutation <- list(
+  teste = ~ cloud_coverage^2,
+  teste2= ~ cloud_coverage^3,
+  teste3 = ~ pressure^2,
+  teste4 = ~ pressure^3,
+  teste5 = ~ humidity^2,
+  teste6 = ~ humidity^3,
+  teste7 = ~ amount_of_rain^2,
+  teste8 = ~ amount_of_rain^3
+)
+
+# Polynomial pipeline - KNN
+gr4 <- po("scale") %>>% 
+  po("mutate") %>>% 
+  po("learner", learner = lrn("regr.kknn")) %>% 
+  as_learner()
+ 
+gr4$param_set$values$mutate.mutation <- list(
+  teste = ~ cloud_coverage^2,
+  teste2 = ~ cloud_coverage^3,
+  teste3 = ~ pressure^2,
+  teste4 = ~ pressure^3,
+  teste5 = ~ humidity^2,
+  teste6 = ~ humidity^3,
+  teste7 = ~ amount_of_rain^2,
+  teste8 = ~ amount_of_rain^3
+)
+
+# MARS
+gr5 <- po("scale") %>>%
+  po("mutate") %>>%
+  po("learner", learner = lrn("regr.earth")) %>% 
+  as_learner()
+
+# TREE
+gr6 <- po("scale") %>>%
+  po("mutate") %>>%
+  po("learner", learner = lrn("regr.rpart")) %>% 
+  as_learner()
+
+# The pipelines are independent from the tasks
+
+
+
+# Training the pipeline
+roda_benchmark <- function() {
+  design <- benchmark_grid(
+  tasks = as_task_regr(maximum_temprature ~ ., data = dados),
+  learners = list(gr, gr2, gr3, gr4, gr5, gr6),
+  resampling = rsmp("holdout", ratio = 0.7)
+)
+
+results <- benchmark(design)
+results$score(msr("regr.rmse"))
+}
+
+roda_benchmark()
+```
+
+
+### Aplicar o modelo com os melhores preditores nos dados de Campinas (gr3 e gr5)
+```{r}
+campinas <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+campinas <- readr::read_csv(campinas)
+
+campinas <- campinas %>% 
+  select_if(is.numeric)
+
+roda_benchmark2 <- function(){
+  design <- benchmark_grid(
+  tasks = as_task_regr(maximum_temprature ~ ., data = campinas),
+  learners = list(gr3, gr5),
+  resampling = rsmp("holdout", ratio = 0.7)
+)
+  
+results2 <- benchmark(design)
+results2$score(msr("regr.rmse"))
+}
+
+roda_benchmark2()
+```
+
+### Run previous function 100x
+```{r}
+results2 <- 1:100 %>% 
+  map_df(~ roda_benchmark2())
+
+results2 %>% 
+  ggplot(aes(group = nr, y = regr.rmse)) + # it's important to check the data results to select the variables 
+  geom_boxplot()
+```
+
+### Aplicar o modelo em novos dados - Clima em Southampton
+```{r}
+southampton <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/master/web%20scraping/Cleaned%20Data/United%20Kingdom_Southampton_Cleaned.csv"
+southampton <- readr::read_csv(southampton)
+
+southampton <- southampton %>% 
+  select_if(is.numeric)
+
+roda_benchmark3 <- function(){
+  design <- benchmark_grid(
+  tasks = as_task_regr(maximum_temprature ~ ., data = southampton),
+  learners = list(gr3, gr5),
+  resampling = rsmp("holdout", ratio = 0.7)
+)
+  
+results3 <- benchmark(design)
+results3$score(msr("regr.rmse"))
+}
+
+roda_benchmark3()
+```
+
+### Run previous function 100x
+```{r}
+results3 <- 1:100 %>% 
+  map_df(~ roda_benchmark3())
+
+results3 %>% 
+  ggplot(aes(group = nr, y = regr.rmse)) + # it's important to check the data results to select the variables 
+  geom_boxplot()
+```
+
+
+
+### Exercicio 2
+```{r}
+library(quanteda)
+library(tidytext)
+# pesquisar argumentos para tokenization do quanteda --> ?quanteda::tokens
+```
+
+```{r}
+link <- "https://github.com/FLS-6497/datasets/raw/main/aula5/discursos_presidenciais.csv"
+discursos <- readr::read_csv2(link) 
+```
+
+
+```{r}
+tsk <- as_task_classif(planalto ~ discurso, data = discursos)
+
+# Pipeline - Naive Bayes
+gr_bow1 <- po("textvectorizer", param_vals = list(stopwords_language = "pt"), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, min_termfreq = 20) %>>%
+  po("learner", learner = lrn("classif.naive_bayes")) %>% 
+  as_learner()
+ 
+# Pipeline - Naive Bayes (n-gram = 2)
+gr_bow2 <- po("textvectorizer", param_vals = list(stopwords_language = "pt"), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, min_termfreq = 20, n = 2) %>>%
+  po("learner", learner = lrn("classif.naive_bayes")) %>% 
+  as_learner()
+
+# Pipeline - Decision Tree (n-gram = 2)
+gr_bow3 <- po("textvectorizer", param_vals = list(stopwords_language = "pt"), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, min_termfreq = 20, n = 2) %>>%
+  po("learner", learner = lrn("classif.rpart")) %>% 
+  as_learner()
+
+# Execute the pipelines as learners
+bench <- function(){
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr_bow1, gr_bow2, gr_bow3),
+  resampling = rsmp("holdout", ratio = 0.7)
+)
+resultados <- benchmark(design)
+resultados$score(msr("classif.fbeta"))
+}
+
+bench()
+
+play_function <- 1:10 %>% 
+  map_df(~ bench())
+
+# Boxplot
+play_function %>% 
+  ggplot(aes(group = nr, y = classif.fbeta)) + geom_boxplot()
+```
+
