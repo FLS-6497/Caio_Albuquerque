@@ -1,0 +1,109 @@
+---
+title: "Projeto 1"
+author: "Caio César Albuquerque & Débora Lemos"
+date: '2022-10-24'
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+knitr::opts_chunk$set(echo = FALSE, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+library(quanteda)
+library(tidytext)
+library(earth)
+library(tidyverse)
+library(mlr3verse)
+library(igraph)
+library(mlr3extralearners)
+library(rpart)
+library(kknn)
+library(ranger)
+```
+
+
+```{r}
+link <- "https://github.com/FLS-6497/datasets/blob/main/projeto1/discursos_pres_internacionais.csv?raw=true"
+discursos <- readr::read_csv2(link)
+
+link <- "https://github.com/FLS-6497/datasets/blob/main/projeto1/discursos_pres_internacionais_validacao.csv?raw=true"
+validacao <- readr::read_csv2(link)
+```
+
+# Treinar a melhor pipeline na base de treino
+```{r}
+# Criar ID para identificar as linhas
+discursos <- discursos %>% 
+  mutate(id = row_number())
+
+tsk <- as_task_classif(presidente ~ discurso, data = discursos)
+
+# Pipeline - Naive Bayes 
+gr_bow <- po("textvectorizer", param_vals = list(stopwords_language = "pt"), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, min_termfreq = 40) %>>%
+  po("learner", learner = lrn("classif.naive_bayes", predict_type = "prob")) %>% 
+  as_learner()
+
+# Pipeline - Decision Tree 
+gr_bow2 <- po("textvectorizer", param_vals = list(stopwords_language = "pt"), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, min_termfreq = 40) %>>%
+  po("learner", learner = lrn("classif.rpart", predict_type = "prob")) %>% 
+  as_learner()
+
+# Suport Vector Machine
+gr_bow3 <- po("textvectorizer", param_vals = list(stopwords_language = "pt"), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, min_termfreq = 40) %>>%
+  po("learner", learner = lrn("classif.svm", predict_type = "prob")) %>% 
+  as_learner()
+
+# Ranger Classification Learner
+gr_bow4 <- po("textvectorizer", param_vals = list(stopwords_language = "pt"), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, min_termfreq = 40) %>>%
+  po("learner", learner = lrn("classif.ranger", predict_type = "prob")) %>% 
+  as_learner()
+
+
+
+bench <- function(){
+design <- benchmark_grid(
+  task = tsk,
+  learner = list(gr_bow, gr_bow2, gr_bow3, gr_bow4),
+  resampling = rsmp("holdout", ratio = 0.7)
+)
+
+resultados <- benchmark(design)
+resultados$score(msrs("classif.logloss"))
+}
+
+bench()
+```
+
+# Repeat function
+```{r}
+play_function <- 1:10 %>% 
+  map_df(~ bench()) 
+  
+
+# Boxplot
+play_function %>% 
+  ggplot(aes(group = nr, y = classif.logloss)) + geom_boxplot()
+```
+
+
+# MLR3 - Ranger Classification Learner
+```{r}
+tsk <- as_task_classif(presidente ~ discurso, data = discursos)
+gr_bow4$train(tsk)
+pred <- gr_bow4$predict_newdata(validacao)
+pred$confusion
+```
+
+
+# MLR3 - Suport Vector Machine
+```{r}
+tsk <- as_task_classif(presidente ~ discurso, data = discursos)
+gr_bow3$train(tsk)
+pred <- gr_bow3$predict_newdata(validacao)
+pred$confusion
+```
+
+
