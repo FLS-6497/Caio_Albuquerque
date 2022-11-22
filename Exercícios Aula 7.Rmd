@@ -1,0 +1,237 @@
+---
+title: "Exercicios Aula 7"
+author: "Caio César Albuquerque"
+date: "2022-11-11"
+output: 
+html_document:
+  df_print: paged
+---
+
+```{r}
+knitr::opts_chunk$set(echo=F, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r}
+library(mlr3extralearners)
+library(rpart)
+library(kknn)
+library(ranger)
+library(earth)
+library(tidyverse)
+library(mlr3verse)
+```
+
+
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula7/eleicoes2000.csv"
+dados <- readr::read_csv2(link) %>%
+  select(-cod_mun_ibge, -nome_municipio, -coligacao, -uf) %>%
+  mutate_if(is.character, as.factor)
+```
+
+### Exploring data
+```{r}
+exploring_data <- dados %>% 
+  select(c(partido, espvida, mort1, t_analf25m, gini, i_escolaridade))
+tsk = as_task_classif(exploring_data, target = "partido")
+autoplot(tsk, type = "pairs", progress = FALSE)
+```
+
+
+### Pipeline - Naive Bayes (without bagging)
+```{r}
+gr_bayes <- po("scale") %>>%
+    po("mutate") %>>%
+    po("learner", lrn("classif.naive_bayes", predict_type = "prob")) %>%
+    as_learner()
+gr_bayes$id <- "naive_bayes"
+```
+
+
+### Pipelines com bagging
+```{r}
+# Classification Decision Tree with subsamples
+gr_bagging1 <- po("scale") %>>% 
+  po("subsample", frac = 1, replace = TRUE) %>>%
+  po("learner", learner = lrn("classif.rpart"), predict_type = "prob") %>% 
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>% # there's "regravg" and "classifavg"
+  as_learner()
+gr_bagging1$id <- "tree_subsample"
+
+
+# Classification Decision Tree without subsamples
+gr_bagging2 <- po("learner", learner = lrn("classif.rpart"), predict_type = "prob") %>% 
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>% # there's "regravg" and "classifavg" 
+  as_learner()
+gr_bagging2$id <- "tree_without_subsample"
+
+
+# MARS - Multivariate Adaptive Regression Splines with subsamples
+gr_bagging3 <- po("scale") %>>%
+  po("subsample", frac = 1, replace = TRUE) %>>% 
+  po("learner", learner = lrn("classif.earth", predict_type = "prob")) %>% 
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>% 
+  as_learner()
+gr_bagging3$id <- "mars_subsample"
+
+# MARS - Multivariate Adaptive Regression Splines without subsamples
+gr_bagging4 <- po("scale") %>>%
+  po("learner", learner = lrn("classif.earth", predict_type = "prob")) %>% 
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>% 
+  as_learner()
+gr_bagging4$id <- "mars_without_subsample"
+
+# KNN with subsamples
+gr_bagging5 <- po("subsample", frac = 1, replace = TRUE) %>>%
+    po("learner", lrn("classif.kknn", predict_type = "prob")) %>%
+    ppl("greplicate", ., 10) %>>%
+    po("classifavg", innum = 10) %>%
+    as_learner()
+gr_bagging5$id <- "kknn_subsample"
+
+
+# KNN without subsamples
+gr_bagging6 <- po("subsample", frac = 1, replace = TRUE) %>>%
+    po("learner", lrn("classif.kknn", predict_type = "prob")) %>%
+    ppl("greplicate", ., 10) %>>%
+    po("classifavg", innum = 10) %>%
+    as_learner()
+gr_bagging6$id <- "kknn_without_subsample"
+
+
+# Random forest
+gr_bagging7 <- po("learner", lrn("classif.randomForest", ntree = 200, predict_type = "prob")) %>%
+  as_learner()
+gr_bagging7$id <- "randomforest"
+
+
+tsk <- as_task_classif(dados, target = "partido")
+
+bench_1 <- function() {
+  design <-  benchmark_grid(
+    tasks = tsk,
+    learners = list(gr_bayes, gr_bagging1, gr_bagging2, gr_bagging3, gr_bagging4, gr_bagging5, gr_bagging6, gr_bagging7), 
+    resamplings = rsmp("holdout", ratio = 0.7))
+  
+result <- benchmark(design)
+measure <- msrs(c("classif.acc", "classif.fbeta", "classif.logloss"))
+scores <- result$aggregate(measure)
+return(list(result, scores))
+}
+
+bench_1()
+```
+
+
+
+### Stacking
+```{r}
+# KNN
+gr_stack1 <- po("scale") %>>%
+  po("learner", learner = lrn("classif.kknn")) %>% 
+  po("learner_cv", .)
+gr_stack1$id <- "knn_stack"
+
+
+# Random Forest
+gr_stack2 <- po("scale") %>>%
+  po("learner", learner = lrn("classif.randomForest", ntree = 100, predict_type = "prob")) %>% 
+  po("learner_cv", .)
+gr_stack2$id <- "randomforest_stack"
+
+
+# Decision Tree (with bagging)
+gr_stack3 <- po("scale") %>>% 
+  po("subsample", frac = 1, replace = TRUE) %>>%
+  po("learner", lrn("classif.rpart", predict_type = "prob")) %>%
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>%
+  po("learner_cv", .)
+gr_stack3$id <- "tree_bagging_stack"
+
+
+
+stacking <- list(gr_stack1, gr_stack2, gr_stack3) %>% 
+  gunion() %>>% # unites the models
+  po("featureunion") %>>% # unites the predictions
+  po("learner", learner = lrn("classif.log_reg")) %>% # choosing the final prediction model
+  as_learner()
+
+tsk <- as_task_classif(dados, target = "partido")
+  
+bench_2 <- function() {
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(stacking),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+
+result <- benchmark(design)
+measure <- msrs(c("classif.acc", "classif.fbeta"))
+scores <- result$aggregate(measure)
+return(list(result, scores))
+} 
+
+bench_2()
+```
+
+
+
+### Boosting
+```{r}
+# Transform categorical features into numeric ones (XGBoost only accepts numerical variables)
+dados2 <- as.data.frame(model.matrix(partido ~ ., dados)) %>%
+  janitor::clean_names()
+dados2$partido <- dados$partido
+
+tsk2 <- as_task_classif(partido ~ ., data = dados)
+
+# Extreme Gradient Boosting - 100x
+gr_xgboost_100 <- po("scale") %>>% 
+  po("learner", lrn("classif.xgboost", nrounds = 100)) %>%
+  as_learner()
+gr_xgboost_100$id <- "xgboost_100"
+
+# Extreme Gradient Boosting - 200x
+gr_xgboost_200 <- po("scale") %>>% 
+  po("learner", lrn("classif.xgboost", nrounds = 200)) %>%
+  as_learner()
+gr_xgboost_200$id <- "xgboost_200"
+
+# Gradient Boosting - 100
+gr_gbm_100 <- po("scale") %>>% 
+  po("learner", learner = lrn("classif.gbm", n.trees = 100)) %>% 
+  as_learner()
+gr_gbm_100$id <- "gbm_100"
+
+# Gradient Boosting - 200
+gr_gbm_200 <- po("scale") %>>% 
+  po("learner", learner = lrn("classif.gbm", n.trees = 200)) %>% 
+  as_learner()
+gr_gbm_200$id <- "gbm_200"
+
+
+  
+bench_3 <- function() {
+design <- benchmark_grid(
+  tasks = tsk2,
+  learners = list(gr_xgboost_100, gr_xgboost_200, gr_gbm_100, gr_gbm_200),
+  resamplings = rsmp("holdout", ratio = 0.7)
+)
+
+result <- benchmark(design)
+measure <- msrs(c("classif.acc", "classif.fbeta"))
+scores <- result$aggregate(measure)
+return(list(result, scores))
+} 
+
+bench_3()
+```
+
+
+
