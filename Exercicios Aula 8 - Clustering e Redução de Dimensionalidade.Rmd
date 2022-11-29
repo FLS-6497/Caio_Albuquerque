@@ -1,0 +1,141 @@
+---
+title: "Exercicios Aula 8"
+author: "Caio César Albuquerque"
+date: "2022-11-16"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(mlr3extralearners)
+library(rpart)
+library(earth)
+library(tidyverse)
+library(mlr3verse)
+library(dbscan)
+library(mlr3cluster)
+# install.packages("kernlab") --> para o PCA
+# install.packages("dbscan") --> para cluster
+```
+
+
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula7/eleicoes2000.csv"
+dados <- readr::read_csv2(link) %>%
+  select(-cod_mun_ibge, -nome_municipio, -uf, -coligacao) %>%
+  mutate_if(is.character, as.factor)
+```
+### PCA is more useful when we have too many variables and when we have a regression problem. Otherwise, with classification problems it might not be so useful (it might be useful with Random Forest classification though). 
+
+
+### Task and pipelines with PCA - Dimensionality Reduction
+```{r}
+tsk = as_task_classif(dados, target = "partido")
+
+# Classification Decision Tree without subsamples - Principal Component Analysis (PCA)
+gr_bagging1 <- po("scale") %>>%
+  po("pca") %>>% 
+  po("learner", learner = lrn("classif.rpart"), predict_type = "prob") %>% 
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>% # there's "regravg" and "classifavg" 
+  as_learner()
+gr_bagging1$id <- "tree_without_subsample"
+
+# gr_bagging1$train(tsk) --> to train the task with the pipeline separately
+# gr_bagging1$state --> informations about the training
+
+
+# Random forest - Principal Component Analysis (PCA)
+gr_bagging2 <- po("scale") %>>%
+  po("pca", rank. = 2) %>>% # rank. = to choose the number of dimensions 
+  po("learner", lrn("classif.randomForest", ntree = 200, predict_type = "prob")) %>%
+  as_learner()
+gr_bagging2$id <- "randomforest"
+
+# gr_bagging2$train(tsk) --> to train the task with the pipeline separately
+# gr_bagging2$state --> informations about the training
+
+
+# KNN with subsamples - Principal Component Analysis (PCA)
+gr_bagging3 <- po("subsample", frac = 1, replace = TRUE) %>>%
+  po("kernelpca") %>>%
+  po("learner", lrn("classif.kknn", predict_type = "prob")) %>%
+  ppl("greplicate", ., 10) %>>%
+  po("classifavg", innum = 10) %>%
+  as_learner()
+gr_bagging3$id <- "kknn_subsample"
+
+
+
+bench <- function() {
+  design <-  benchmark_grid(
+    tasks = tsk,
+    learners = list(gr_bagging1, gr_bagging2, gr_bagging3), 
+    resamplings = rsmp("holdout", ratio = 0.7))
+  
+result <- benchmark(design)
+measure <- msrs(c("classif.acc", "classif.fbeta", "classif.logloss"))
+scores <- result$aggregate(measure)
+return(list(result, scores))
+}
+
+bench()
+```
+
+### Cluster K-means
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula8/gabinetes22.csv"
+dados <- readr::read_csv2(link)
+
+dados2 <- dados %>%
+  select_if(is.numeric)
+```
+
+```{r}
+# Define a task
+tsk <- as_task_clust(dados2)
+
+# Cluster K-means
+clust <- lrn("clust.kmeans", centers = 4)
+clust$train(tsk)
+dados$cluster <- clust$assignments # inserir cluster nos dados
+
+dados %>% 
+  select(-tx_nome_parlamentar, -sg_uf, -sg_partido) %>% 
+  pivot_longer(-cluster) %>% 
+  ggplot(aes(x = value, group = as.character(cluster)))+
+  geom_boxplot() + facet_wrap(~name, scales = "free")
+```
+### OBS:
+```{r}
+# Projeto:
+# Para medir as vaiaveis mais importantes que estao no modelo
+# xboosting = feature.importance --> randomForest
+```
+
+
+### Cluster pipelines
+```{r}
+tsk <- as_task_clust(dados2)
+
+
+cluster_k <- po("scale") %>>% 
+  po("learner", learner = lrn("clust.kmeans"), centers = 4) %>%
+  as_learner()
+
+cluster_hierarquico <- po("scale") %>>% 
+  po("learner", learner = lrn("clust.hclust")) %>%
+  as_learner()
+
+cluster_dbscan <- po("scale") %>>%  
+  po("learner", learner= lrn("clust.dbscan", eps = 4)) %>%
+  as_learner()
+
+# install.packages("factoextra") --> vizualização de clusters
+library(factoextra)
+#install.packages("FactoMineR") --> vizualização de clusters
+library("FactoMineR")
+```
+
+
