@@ -1,0 +1,208 @@
+---
+title: "Exercicios Aula 9"
+author: "Caio César Albuquerque"
+date: "2022-11-23"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r}
+library(mlr3extralearners)
+library(rpart)
+library(kknn)
+library(ranger)
+library(earth)
+library(tidyverse)
+library(mlr3verse)
+```
+
+*Para séries temporais mlr3 não é muito indicado. 
+*Walk Forward (janelas fixas ou janelas móveis)
+install.packages("vars")
+remotes::install_github("mlr-org/mlr3forecasting")
+
+Função po("scale") tira a média das variáveis e divide pelo desvio padrão
+
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula9/camara_2014.csv"
+dados <- readr::read_csv2(link) %>%
+  mutate_if(is.character, as.factor)
+```
+
+### K-fold cross-validation
+```{r}
+tsk <- as_task_classif(resultado ~ ., data = dados)
+
+# Random forest
+gr <- po("scale") %>>% 
+  po("encode") %>>% # transforming the variables into dummies
+  po("learner", lrn("classif.randomForest", ntree = 100, predict_type = "prob")) %>%
+  as_learner()
+gr$id <- "randomforest"
+
+
+bench <- function(){
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr),
+  resamplings = rsmp("cv", folds = 5)
+)
+result <- benchmark(design)
+measure <- msrs(c("classif.fbeta", "classif.precision", "classif.recall"))
+scores <- result$aggregate(measure)
+return(list(result, scores))
+}
+
+bench()
+
+
+bench2 <- function(){
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr),
+  resamplings = rsmp("cv", folds = 10)
+)
+result <- benchmark(design)
+measure <- msrs(c("classif.fbeta", "classif.precision", "classif.recall"))
+scores <- result$aggregate(measure)
+return(list(result, scores))
+}
+
+bench2()
+```
+
+
+Leave-one-out cross-validation (LOOCV) - melhor para bases menores
+```{r}
+dados_menor <- sample_n(dados, 100) 
+
+
+# Nova task com menos dados
+tsk <- as_task_classif(resultado ~ ., stratum = "resultado", data = dados_menor) # stratum estratifica a variável "resultado" que tem muito mais números "zero" do que "um"; passando a levar esse balanço em consideração. Para cluster é só substituir "stratum" por "group".
+
+
+# KNN
+gr2 <- po("scale") %>>% 
+  po("encode") %>>% # transforming the variables into dummies
+  po("learner", lrn("classif.kknn", predict_type = "prob")) %>%
+  as_learner()
+gr2$id <- "KNN"
+
+
+bench3 <- function(){
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr2),
+  resamplings = rsmp("loo")
+)
+result <- benchmark(design)
+measure <- msrs(c("classif.acc", "classif.ce"))
+scores <- result$aggregate(measure)
+return(list(result, scores))
+}
+
+bench3()
+
+
+bench4 <- function(){
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr2),
+  resamplings = rsmp("repeated_cv") # repeated_cv reduz a variação em decorrencia do sorteio
+)
+result <- benchmark(design)
+measure <- msrs(c("classif.acc", "classif.ce"))
+scores <- result$aggregate(measure)
+return(list(result, scores))
+}
+
+bench4()
+```
+
+
+### Validation workflow
+```{r}
+link <- "https://raw.githubusercontent.com/FLS-6497/datasets/main/aula9/camara_2014.csv"
+dados <- readr::read_csv2(link) %>%
+  mutate_if(is.character, as.factor) %>% 
+  mutate(id = 1:n())
+
+validacao <- sample_frac(dados, 0.05)
+dados <- dados %>% 
+  filter(!id %in% validacao$id)
+
+tsk <- as_task_classif(resultado ~ ., data = dados)
+
+gr2 <- po("scale") %>>% 
+  po("encode") %>>% # transforming the variables into dummies
+  po("learner", lrn("classif.kknn", predict_type = "prob")) %>%
+  as_learner()
+
+gr3 <- po("encode") %>>% 
+  po("learner", learner = lrn("classif.svm", predict_type = "prob")) %>% 
+  as_learner()
+
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr2, gr3),
+  resamplings = rsmp("cv")
+)
+  
+resultados <- benchmark(design)
+resultados$aggregate(msrs(c("classif.auc", "classif.prauc"))) # aggregate calcula a média das métricas
+autoplot(resultados)
+
+# Usar a melhor pipeline para treinar a base de validação
+gr3$train(tsk)
+  
+tsk_validacao <- as_task_classif(resultado ~ ., data = validacao)
+pred <- gr3$predict(tsk_validacao)
+pred$score(msrs(c("classif.prauc", "classif.auc")))
+```
+
+### Dados Climaticos
+```{r}
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+dados <- readr::read_csv(link) %>% 
+  mutate(id = 1:n()) %>% 
+  mutate(lag_max_temp = lag(maximum_temprature)) %>%  # usar observações anteriores para série temporal
+  mutate_if(is.character, as.factor) %>% #  transforma de caractere para fator
+  na.omit() %>% 
+  select(-date, -country, -city)
+
+validacao <- sample_frac(dados, 0.05) %>% 
+  select(-id) # removendo id da base de validação
+
+dados <- dados %>% 
+  filter(!id %in% validacao$id) %>% 
+  select(-id) # removendo id da base de treino
+
+tsk <- as_task_regr(maximum_temprature ~ ., data = dados)
+
+gr4 <- po("scalerange", lower = 0, upper = 1) %>>%
+  po("encode") %>>% 
+  po("learner", learner = lrn("regr.xgboost", nrounds = 50)) %>% 
+  as_learner()
+
+
+design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr4), 
+  resamplings = rsmp("repeated_cv", folds = 5, repeats = 3)
+)
+
+resultados <- benchmark(design)
+resultados$aggregate(msr("regr.rmse"))
+
+# Treinar na base de validação
+gr4$train(tsk)
+
+validacao <- as_task_regr(maximum_temprature ~ ., data = validacao)
+pred <- gr4$predict(validacao)
+pred$score(msr("regr.rmse"))
+```
+
+
+
