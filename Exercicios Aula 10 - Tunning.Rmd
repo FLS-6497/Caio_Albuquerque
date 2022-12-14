@@ -1,0 +1,213 @@
+---
+title: "Exercicios Aula 10"
+author: "Caio César Albuquerque"
+date: '2022-11-30'
+output: html_document
+---
+
+
+```{r}
+library(mlr3verse)
+library(mlr3tuning)
+library(tidyverse)
+
+# install.packages(c("mlr3mbo", "DiceKriging")) --> Bayesian Optimization
+library(mlr3mbo)
+
+# install.packages("future") --> paralelização
+library(future)
+
+# install.packages("smotefamily")
+library(smotefamily)
+```
+
+
+```{r}
+link <- "https://github.com/FLS-6497/datasets/raw/main/aula10/supreme.csv"
+dados <- readr::read_csv2(link) %>%
+  mutate_if(is.character, as.factor) %>% 
+  mutate_at(c("jurisdiction", "certReason", "issueArea"), as.factor) # eram variáveis categóricas que estavam como numéricas no banco de dados, era preciso corrigir
+```
+### Hiperparâmetro é uma configuração do modelo
+
+
+### Gridsearch
+```{r}
+tsk <- as_task_classif(winner ~ ., data = dados)
+
+boost <- lts(lrn("classif.xgboost")) # treina várias árvores de forma sequencial
+# a função lts() traz as combinações originais, os hiperparâmetros que vêm por padrão 
+
+
+gr <- po("encode") %>>% # transofmar em dummies
+  po("smote") %>% # cria observações artificiais baseadas no modelo real
+  boost %>% 
+  as_learner()
+gr
+
+
+# Criamos uma instancia (parecido com um design grid)
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("repeated_cv", folds = 10, repeats = 3),
+  measures = msr("classif.acc"),
+  terminator = trm("evals", n_evals = 10)
+)
+
+# Tuning
+tuner <- tnr("random_search") # ou grid_search para treinar todas as combinações
+tuner$optimize(instance)
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble() %>% 
+  view()
+
+# Retreina a melhor pipeline na base completa
+gr$param_set$values <- instance$result_learner_param_vals
+gr$train(tsk)
+```
+
+
+### Gridsearch
+```{r}
+# Criar uma pipeline (e indicar parametros para tuning) - Gridsearch
+gr2 <- po("encode") %>>% 
+  po("learner", learner = lrn("classif.randomForest", predict_type = "prob"),
+         ntree = to_tune(c(20, 50, 100)), 
+         mtry = to_tune(c(3, 7, 11))) %>% 
+#ntree = hiperparâmetro que diz quantas árvores testar
+#mtry = número de variáveis aleatoriamente escolhida para serem usadas em cada árvore
+  as_learner()
+
+
+# Criamos uma instancia (parecido com um design grid)
+instance <- ti(
+  task = tsk,
+  learner = gr2,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.acc"),
+  terminator = trm("none")
+)
+
+# Tuning
+tuner <- tnr("grid_search") # treina todas as combinações exaustivamente
+tuner$optimize(instance)
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble()
+
+# Retreina a melhor pipeline na base completa
+gr2$param_set$values <- instance$result_learner_param_vals
+gr2$train(tsk)
+```
+
+
+### Otimização Bayesiana - indicado para bases de dados grandes
+```{r}
+# Criamos uma instancia
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("repeated_cv", folds = 5),
+  measures = msr("classif.fbeta"),
+  terminator = trm("stagnation", iters = 10, threshold = 0.01)
+)
+
+# Tuning
+tuner <- tnr("mbo")
+tuner$optimize(instance)
+```
+
+
+### Análise de texto
+```{r}
+library(quanteda)
+library(tidytext)
+```
+
+```{r}
+link <- "https://github.com/FLS-6497/datasets/blob/main/projeto1/discursos_pres_internacionais.csv?raw=true"
+discursos <- readr::read_csv2(link)
+
+link <- "https://github.com/FLS-6497/datasets/blob/main/projeto1/discursos_pres_internacionais_validacao.csv?raw=true"
+validacao <- readr::read_csv2(link)
+```
+
+```{r}
+# Criar ID para identificar as linhas
+discursos <- discursos %>% 
+  mutate(id = row_number())
+
+tsk <- as_task_classif(presidente ~ discurso, data = discursos)
+
+
+# Suport Vector Machine
+gr_bow <- po("textvectorizer", 
+             param_vals = list(stopwords_language = "pt",
+                               remove_punct = TRUE,
+                               remove_numbers = TRUE,
+                               remove_symbols = TRUE,
+                               min_termfreq = to_tune(0, 0.02),
+                               max_termfreq = to_tune(0.7, 1),
+                               termfreq_type = "prop")) %>>%
+  po("learner", learner = lrn("classif.naive_bayes", predict_type = "prob")) %>% 
+  as_learner()
+
+
+# Criamos uma instancia
+instance <- ti(
+  task = tsk,
+  learner = gr_bow,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"), # classif.logloss é bom quando temos muitas categorias
+  terminator = trm("evals", n_evals = 5)
+)
+
+# Tuning
+tuner <- tnr("mbo")
+tuner$optimize(instance)
+
+as.data.table(instance$archive) %>% 
+  as_tibble() %>% 
+  view()
+```
+
+
+
+### Dados Climáticos
+```{r}
+link <- "https://raw.githubusercontent.com/jacobwright32/Web_Scraper_AI_Core_Project/bb4865ae568e23ab8fadb6ea58cf117df2164ef3/web%20scraping/Cleaned%20Data/Brazil_Sao%20Bernardo%20Do%20Campo_Cleaned.csv"
+dados <- readr::read_csv(link) %>% 
+  mutate(id = 1:n()) %>% 
+  select(-city, -country, -date) %>% 
+  mutate_if(is.character, as.factor)
+
+tsk <- as_task_regr(maximum_temprature ~ ., data = dados)
+
+glmnet <- lts(lrn("regr.glmnet"))
+
+gr <- po("scale") %>>% 
+  po("encode") %>>% 
+  glmnet %>% 
+  as_learner()
+
+instance <- ti(
+  task = tsk,
+  learner = gr,
+  resampling = rsmp("repeated_cv", folds = 10, repeats = 2),
+  measures = msr("regr.rmse"),
+  terminator = trm("stagnation", iters = 10, threshold = 0.1)
+)
+
+# Tuning
+tuner <- tnr("mbo")
+tuner$optimize(instance)
+
+as.data.table(instance$archive) %>% 
+  as_tibble() %>% 
+  view()
+```
+
