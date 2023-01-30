@@ -1,0 +1,366 @@
+---
+title: "Projeto Final"
+author: "Caio César Albuquerque e Débora Lemos"
+date: "2023-01-09"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+knitr::opts_chunk$set(echo = FALSE, error=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+library(mlr3verse)
+library(mlr3extralearners)
+library(tidyverse)
+library(xgboost)
+library(randomForest)
+library(kknn)
+library(rpart)
+library(earth)
+library(igraph)
+library(mlr3tuning)
+library(mlr3mbo)
+```
+
+
+### Setting the data up
+```{r}
+dados <- readr::read_csv2("D:/Aplicativos/Machine Learning/Projeto Final/dados.csv") %>% 
+  select(-averagerubric)
+
+# regimecorruption's NA's are gonna be replaced the variable mean 
+dados$regimecorruption<- as.numeric(dados$regimecorruption)
+dados$regimecorruption[is.na(dados$regimecorruption)] <- mean(dados$regimecorruption, na.rm = TRUE)
+
+# Fixing the variable yearend
+dados$yearend <- replace(dados$yearend, is.na(dados$yearend), 2019)
+dados$yearend <- ifelse(dados$yearend > 2019, 2019, dados$yearend)
+
+# Fixing the variables totalaverage and averagerubric
+dados$totalaverage<- as.numeric(dados$totalaverage)
+dados$totalaverage[is.na(dados$totalaverage)] <- mean(dados$totalaverage, na.rm = TRUE)
+
+# Fixing totalaverage's outliers
+dados <- dados %>% mutate(totalaverage = case_when(totalaverage > 2.0 ~ 2, TRUE ~ totalaverage))
+#dados$totalaverage <- replace(dados$totalaverage > 2, 2, dados$totalaverage)
+
+
+# Verifying NA's
+dados[!complete.cases(dados), ]
+```
+
+
+### The variables
+
+* regimecorruption: lower scores indicate a normatively better situation (e.g. more democratic) and higher scores a normatively worse situation (e.g. less democratic). Note that this directionality is opposite of that of other V-Dem indices, which generally run from normatively worse to better.
+Scale: Interval, from low to high (0-1).
+
+
+* leader: Head of Government or Head of State
+
+* hos_or_hog: Is the head of state (HOS) also head of government (HOG)?
+0: No
+1: Yes
+
+* genderleader: provides the gender of the person executing the most effective power over this body.
+0: Male
+1: Female
+
+
+* pol_spectrum: categorical indicator with -1 = left; 0 = center; 1 = right
+
+* support_groups: Which (one) group does the current political regime rely on most strongly in order to
+maintain power?
+0: The aristocracy, including high status hereditary social groups and castes.
+1: Agrarian elites, including rich peasants and large landholders.
+2: Party elites (of the party or parties that control the executive).
+3: Business elites.
+4: Civil servants.
+5: The military.
+6: An ethnic or racial group(s).
+7: A religious group(s).
+8: Local elites, including chiefs.
+9: Urban working classes, including labor unions.
+10: Urban middle classes
+11: Rural working classes (e.g., peasants).
+12: Rural middle classes (e.g., family farmers)
+13: A foreign government or colonial power. 
+14: Non available
+
+* opposition_groups: Which (one) group constitutes the greatest threat to the current regime?
+1: Agrarian elites, including rich peasants and large landholders.
+2: Party elites (of the party or parties that control the executive).
+3: Business elites.
+4: Civil servants.
+5: The military.
+6: An ethnic or racial group(s).
+7: A religious group(s).
+8: Local elites, including chiefs.
+9: Urban working classes, including labor unions.
+10: Urban middle classes
+11: Rural working classes (e.g., peasants).
+12: Rural middle classes (e.g., family farmers)
+13: A foreign government or colonial power.
+14: Non available
+
+
+* president: 1 if the leader is a president, 0 if a prime minister
+* year: year of beginning of term
+* yearend: year of ending of respective term
+
+* speechtype: 
+0: International
+1: Campaign
+2: Ribbon cutting
+3: Famous
+
+* region:
+0: Central and Eastern Europe
+1: Latin America & Caribbean
+2: Central Asia
+3: Western Europe
+4: North America
+5: Sub-Saharan Africa
+6: South Asia
+7: Middle East & North Africa
+8: East Asia & Pacific
+
+* speechnum: number of that speech for that leader-term
+* codernum: coder identifier for that speech-leader
+* averagerubric: average populism grade for that speech. Arithmetic average across all coders for that speech;
+* totalaverage: average populism grade for that leader-term. Arithmetic mean for all speeches by all coders for that leader-term.
+
+
+### Settings
+```{r}
+# Turning the categorical variables into factors
+dados <- dados %>% 
+  mutate(across(c(year, yearend, president, region, pol_spectrum, term, genderleader, hos_or_hog, support_groups, opposition_groups, speechtype, speechnum, codernum), ~ factor(.x)))
+```
+
+
+
+# Exploring Data
+
+### Linear Regressions
+```{r}
+dados %>% select(-c(country, party, leader)) %>% 
+  mutate_all(as.numeric) %>% 
+  pivot_longer(-totalaverage) %>% 
+  ggplot(aes(x = totalaverage, y = value)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) + facet_wrap(~ name, scales = "free")
+```
+
+### Populismo por regiao
+```{r}
+dados %>% group_by(region, pol_spectrum) %>% 
+  summarise(populismo_regiao = mean(totalaverage, na.rm = TRUE)) %>% 
+  ggplot() + geom_col(aes(region, populismo_regiao, fill = pol_spectrum), position = "dodge", binwidth = 1, colour = "black") +
+  ggtitle("Populismo por região") + xlab("Região") + ylab("Populismo (média)")
+```
+
+### Populismo por grupos de apoio
+```{r}
+dados %>% group_by(region, support_groups) %>% 
+  summarise(average = mean(totalaverage, na.rm = TRUE)) %>% 
+  ggplot() + geom_col(aes(region, average, fill = support_groups), position = "dodge", binwidth = 1, colour = "black") +
+  ggtitle("Populismo por região e principais grupos de apoio") + xlab("Região") + ylab("Populismo (média)")
+```
+
+### Populismo por grupos de oposicao
+```{r}
+dados %>% group_by(region, opposition_groups) %>% 
+  summarise(average = mean(totalaverage, na.rm = TRUE)) %>% 
+  ggplot() + geom_col(aes(region, average, fill = opposition_groups), position = "dodge", binwidth = 1, colour = "black") +
+  ggtitle("Populismo por região e principais grupos de oposição") + xlab("Região") + ylab("Populismo (média)")
+```
+
+### Populismo por espectro político
+```{r}
+dados %>% group_by(pol_spectrum) %>% 
+  summarise(average = mean(totalaverage)) %>% 
+   ggplot() + geom_col(aes(pol_spectrum, average, fill = pol_spectrum), binwidth = 1, colour = "black") +
+   ggtitle("Populismo por espectro político") + xlab("Espectro Político") + ylab("Populismo (média)")
+```
+
+
+### Populismo ao longo dos anos
+```{r}
+dados %>% 
+  group_by(year) %>% 
+  summarise(average = mean(totalaverage, na.rm = TRUE)) %>% 
+  ggplot() + geom_col(aes(year, average), binwidth = 1, colour = "black") + 
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("Populismo ao longo dos anos") + xlab("Anos") + ylab("Populismo (média)")
+```
+
+### Populismo por gênero
+```{r}
+dados %>%  group_by(genderleader, pol_spectrum) %>% 
+  summarise(average = mean(totalaverage, na.rm = TRUE)) %>%
+  ggplot() + geom_col(aes(genderleader, average, fill = pol_spectrum), position = "dodge", binwidth = 1, colour = "black") +
+  ggtitle("Populismo por gênero") + xlab("Gênero") + ylab("Populismo (média)")
+
+```
+
+### Corrupcao e populismo
+```{r}
+library(ggthemes)
+dados %>% ggplot() + geom_point(aes(regimecorruption, totalaverage, colour = region)) +
+  geom_smooth(aes(regimecorruption, totalaverage), method = "lm") +
+  theme_economist() + theme(legend.position = "right") + ggtitle("Populismo e Corrupção") +
+  xlab("Corrupção") + ylab("Populismo")
+```
+
+### Regression
+```{r}
+dados %>% lm(totalaverage ~ regimecorruption, data = .) 
+dados %>% cor.test( ~ totalaverage + regimecorruption, data = .)
+```
+
+
+
+
+### Organizing the data 
+```{r}
+# These variables didn't turn into leveled factors properly. So it was best to turn them into numeric variables.
+dados$country <- as.numeric(factor(dados$country)) 
+dados$party <- as.numeric(factor(dados$party))
+dados$leader <- as.numeric(factor(dados$leader))
+
+# Para XGBOOST
+dados <- dados %>% mutate_all(as.numeric) 
+
+# Separando os dados
+treino <- sample_frac(dados, 0.6) 
+teste <- sample_frac(dados, 0.2) 
+validacao <- sample_frac(dados, 0.2) 
+```
+
+
+### KNN
+```{r}
+tsk <- as_task_classif(totalaverage ~ ., data = treino)
+
+
+# Random forest
+gr <-po("learner", learner = lrn("classif.kknn", predict_type = "prob")) %>%
+  as_learner()
+gr$id <- "KNN"
+
+roda_benchmark <- function(){
+  design <- benchmark_grid(
+  tasks = tsk,
+  learners = list(gr),
+  resampling = rsmp("holdout", ratio = 0.7)
+)
+  
+results <- benchmark(design)
+results$score(msr("classif.acc"))
+}
+
+roda_benchmark() 
+```
+
+
+### Gridsearch Randomforest
+```{r}
+validacao <- droplevels(validacao)
+tsk <- as_task_classif(totalaverage ~ ., data = validacao)
+
+
+# Random forest
+rf <-po("learner", learner = lrn("classif.randomForest", ntree = to_tune(c(10, 50, 100)), mtry = to_tune(c(2, 4, 8)), predict_type = "prob")) %>%
+  as_learner()
+rf$id <- "randomforest"
+
+#Instancia 
+instance <- ti(
+  task = tsk,
+  learner = rf,
+  resampling = rsmp("cv", folds = 5),
+  measures =  msrs(c("classif.acc", "classif.logloss")),
+  terminator = trm("none")
+)
+
+# Tuning
+tuner <- tnr("grid_search")
+tuner$optimize(instance)
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble() 
+```
+
+
+# Gridsearch XGBOOST
+```{r}
+tsk<- as_task_classif(totalaverage ~ ., data = teste)
+
+# XGBOOST
+gr_xgboost <- po("learner", learner = lrn("classif.xgboost", nrounds = to_tune(c(10, 30, 70, 100)), subsample= to_tune(c(.7,.8,.9)), predict_type = "prob")) %>%
+  as_learner()
+gr_xgboost$id <- "xgboost"
+
+# Instancia 
+instance <- ti(
+  task = tsk,
+  learner = gr_xgboost,
+  resampling = rsmp("cv", folds = 5),
+  measures =  msrs(c("classif.acc", "classif.logloss")),
+  terminator = trm("none")
+)
+
+# Tuning
+tuner <- tnr("grid_search")
+tuner$optimize(instance)
+
+# Os resultados ficam salvos em um tibble
+as.data.table(instance$archive) %>%
+  as_tibble() 
+```
+
+
+### Variables importance
+```{r}
+library(data.table)
+library(mlr)
+library(xgboost)
+
+setDT(treino)
+setDT(teste)
+
+label_treino <- treino$totalaverage
+label_teste <- teste$totalaverage
+
+
+# Turn into matrix
+label_treino2 <- model.matrix(~. + 0, data = treino[, -c("totalaverage"), with = FALSE])
+label_treino <- as.numeric(label_treino)-1
+
+label_teste2 <- model.matrix(~. + 0, data = teste[, -c("totalaverage"), with = FALSE])
+label_teste <- as.numeric(label_teste)-1
+
+dtreino <- xgb.DMatrix(data = label_treino2, label = label_treino)
+dteste <- xgb.DMatrix(data = label_teste2, label = label_teste)
+
+params <- list(booster = "gbtree")
+
+xgbcv <- xgb.cv(params = params, data = dtreino, nrounds = 100, nfold = 5)
+
+min(xgbcv$test.error.mean)
+
+xgb1 <- xgb.train(params = params, data = dtreino, nrounds = 500)
+
+xbpred <- predict(xgb1, dteste)
+
+imp <- xgb.importance(feature_names = colnames(label_treino2), model = xgb1)
+xgb.ggplot.importance(imp)
+```
+
+
+
